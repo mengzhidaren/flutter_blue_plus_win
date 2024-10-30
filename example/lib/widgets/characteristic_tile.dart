@@ -28,6 +28,7 @@ class _CharacteristicTileState extends State<CharacteristicTile> {
     super.initState();
     _lastValueSubscription = widget.characteristic.lastValueStream.listen((value) {
       _value = value;
+      print('value=$value');
       if (mounted) {
         setState(() {});
       }

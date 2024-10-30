@@ -9,7 +9,7 @@ class BluetoothDeviceWindows extends BluetoothDevice {
     required super.remoteId,
     this.rssi,
   });
-
+  final tag = "BluetoothDeviceWindows";
   final int? rssi;
 
   final String platformName;
@@ -82,7 +82,17 @@ class BluetoothDeviceWindows extends BluetoothDevice {
 
   /// Returns true if this device is currently disconnected from your app
   bool get isDisconnected => isConnected == false;
-
+  bool isConnectState = false;
+  _checkState(BluetoothConnectionState state) {
+    isConnectState = state == BluetoothConnectionState.connected;
+    log('$tag $platformName ConnectState $isConnectState');
+    if (!isConnectState) {
+      log('$tag  _checkState $platformName subscriptions cancel');
+      FlutterBluePlusWindows._deviceSubscriptions[remoteId]
+          ?.forEach((s) => s.cancel());
+      FlutterBluePlusWindows._deviceSubscriptions.remove(remoteId);
+    }
+  }
   Future<void> connect({
     Duration? timeout = const Duration(seconds: 35), // TODO: implementation missing
     bool autoConnect = false, // TODO: implementation missing
@@ -92,7 +102,7 @@ class BluetoothDeviceWindows extends BluetoothDevice {
       await WinBle.connect(_address);
       FlutterBluePlusWindows._deviceSet.add(this);
     } catch (e) {
-      log(e.toString());
+      log('$tag connect ${errorTip(e)}');
     }
   }
 
@@ -102,9 +112,14 @@ class BluetoothDeviceWindows extends BluetoothDevice {
     bool queue = true, // TODO: implementation missing
   }) async {
     try {
-      await WinBle.disconnect(_address);
+      if(_checkDeviceLive(_address)){
+        isConnectState = false;
+        await WinBle.disconnect(_address);
+      }else{
+        log('$tag  disconnect 已经断开连接 _address=$_address');
+      }
     } catch (e) {
-      log(e.toString());
+      log('$tag disconnect ${errorTip(e)}');
     } finally {
       FlutterBluePlusWindows._deviceSet.remove(this);
 
@@ -120,62 +135,71 @@ class BluetoothDeviceWindows extends BluetoothDevice {
       FlutterBluePlusWindows._isNotifying[remoteId]?.clear();
     }
   }
-
+  bool _checkDeviceLive(String addressV){
+    return isConnected&&isConnectState;
+  }
   Future<List<BluetoothService>> discoverServices({
     bool subscribeToServicesChanged = true, // TODO: implementation missing
     int timeout = 15, // TODO: implementation missing
   }) async {
-    List<BluetoothServiceWindows> result = List.from(FlutterBluePlusWindows._knownServices[remoteId] ?? []);
+    if(!_checkDeviceLive(_address)){
+      //设备未链接 直接返回
+      final cache = FlutterBluePlusWindows._knownServices[remoteId] ?? [];
+      log('$tag  discoverServices cache=$cache');
+      return cache;
+    }
+    final listService = <BluetoothServiceWindows>[];
 
+    // List<BluetoothServiceWindows> result = List.from(FlutterBluePlusWindows._knownServices[remoteId] ?? []);
+    bool forceR=true;
     try {
       _isDiscoveringServices.add(true);
-
-      final response = await WinBle.discoverServices(_address);
+      final response = await WinBle.discoverServices(_address,forceRefresh: forceR);
+      log('$tag  discoverServices response=${response}');
       FlutterBluePlusWindows._characteristicCache[remoteId] ??= <String, List<BluetoothCharacteristic>>{};
-
       for (final serviceId in response) {
         final characteristic = await WinBle.discoverCharacteristics(
           address: _address,
           serviceId: serviceId,
+          forceRefresh: forceR
         );
-        FlutterBluePlusWindows._characteristicCache[remoteId] ??= {};
-        FlutterBluePlusWindows._characteristicCache[remoteId]?[serviceId] ??= [
-          ...characteristic.map(
-            (e) => BluetoothCharacteristicWindows(
-              remoteId: remoteId,
-              serviceUuid: Guid(serviceId),
-              characteristicUuid: Guid(e.uuid),
-              descriptors: [],
-              // TODO: implementation missing
-              propertiesWinBle: e.properties,
-            ),
-          ),
-        ];
+        final listChar = characteristic
+            .map((c) => BluetoothCharacteristicWindows(
+          remoteId: remoteId,
+          serviceUuid: Guid(serviceId),
+          characteristicUuid: Guid(c.uuid),
+          descriptors: [],
+          // TODO: implementation missing
+          propertiesWinBle: c.properties,
+        ))
+            .toList();
+        listService.add(BluetoothServiceWindows(
+          remoteId: remoteId,
+          serviceUuid: Guid(serviceId),
+          // TODO: implementation missing
+          isPrimary: true,
+          // TODO: implementation missing
+          characteristics: listChar,
+          // TODO: implementation missing
+          includedServices: [],
+        ));
+        FlutterBluePlusWindows._characteristicCache[remoteId]?[serviceId] =listChar;
       }
-
-      result = [
-        ...response.map(
-          (p) => BluetoothServiceWindows(
-            remoteId: remoteId,
-            serviceUuid: Guid(p),
-            // TODO: implementation missing
-            isPrimary: true,
-            // TODO: implementation missing
-            characteristics: FlutterBluePlusWindows._characteristicCache[remoteId]![p]!,
-            // TODO: implementation missing
-            includedServices: [],
-          ),
-        )
-      ];
-
-      FlutterBluePlusWindows._knownServices[remoteId] = result;
-
-      _services.add(result);
+      FlutterBluePlusWindows._knownServices[remoteId] = listService;
+      _services.add(listService);
+    }catch(e){
+      log('$tag discoverServices ${errorTip(e)}');
+      final cache = FlutterBluePlusWindows._knownServices[remoteId] ?? [];
+      if (cache.isNotEmpty) {
+        listService.addAll(cache);
+      }
     } finally {
       _isDiscoveringServices.add(false);
     }
-    return result;
+
+    return listService;
   }
+
 
   DisconnectReason? get disconnectReason {
     // TODO: nothing to do
@@ -184,20 +208,19 @@ class BluetoothDeviceWindows extends BluetoothDevice {
 
   Stream<BluetoothConnectionState> get connectionState async* {
     await FlutterBluePlusWindows._initialize();
-
     final map = FlutterBluePlusWindows._connectionStream.latestValue;
-
-    log('Connection State is started');
-
     if (map[_address] != null) {
-      yield map[_address]!.isConnected;
+      final state = map[_address]!.isConnected;
+      _checkState(state);
+      yield state;
     }
 
     await for (final event in WinBle.connectionStreamOf(_address)) {
-      yield event.isConnected;
+      final state = event.isConnected;
+      _checkState(state);
+      yield state;
     }
-
-    log('Connection State is closed');
+    log('$tag Connection State is closed');
   }
 
   Stream<int> get mtu async* {
@@ -210,7 +233,7 @@ class BluetoothDeviceWindows extends BluetoothDevice {
         isEmitted = true;
       } catch (e) {
         await Future.delayed(const Duration(milliseconds: 500));
-        log(e.toString());
+        log('$tag mtu ${errorTip(e)}');
       }
     }
   }
@@ -254,7 +277,7 @@ class BluetoothDeviceWindows extends BluetoothDevice {
     try {
       await WinBle.pair(_address);
     } catch (e) {
-      log(e.toString());
+      log('$tag createBond ${errorTip(e)}');
     }
   }
 
@@ -264,7 +287,7 @@ class BluetoothDeviceWindows extends BluetoothDevice {
     try {
       await WinBle.unPair(_address);
     } catch (e) {
-      log(e.toString());
+      log('$tag removeBond ${errorTip(e)}');
     }
   }
 

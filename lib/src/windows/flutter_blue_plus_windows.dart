@@ -1,8 +1,9 @@
 part of 'windows.dart';
 
 class FlutterBluePlusWindows {
+  static final tag = 'FlutterBluePlusWindows';
   static bool _initialized = false;
-
+  static bool isDebug = false;
   static BluetoothAdapterState _state = BluetoothAdapterState.unknown;
 
   // stream used for the isScanning public api
@@ -40,26 +41,37 @@ class FlutterBluePlusWindows {
   /// Flutter blue plus windows
   static final _connectionStream = _StreamController(initialValue: <String, bool>{});
 
+  static StreamSubscription? connectionIO;
+
+  static Future<void> restartBLE() async {
+    if (_initialized) {
+      log("$tag restartBLE  重启");
+      connectionIO?.cancel();
+      connectionIO = null;
+      WinBle.dispose();
+      _initialized = false;
+    }
+    await _initialize();
+  }
   static Future<void> _initialize() async {
     if (_initialized) return;
     await WinBle.initialize(
       serverPath: await WinServer.path(),
-      enableLog: false,
+      enableLog: isDebug,
     );
 
-    WinBle.connectionStream.listen(
+    connectionIO = WinBle.connectionStream.listen(
       (event) {
-        log('$event - event');
+        log('$tag event - $event');
         if (event['device'] == null) return;
         if (event['connected'] == null) return;
 
         final map = _connectionStream.latestValue;
         map[event['device']] = event['connected'];
-
-        log('$map - map');
         _connectionStream.add(map);
-
         if (!event['connected']) {
+          log(
+              '$tag  connectionStream  device=${event['device']} 已断开链接');
           final removingDevices = [
             ..._deviceSet.where(
               (device) => device._address == event['device'],
@@ -82,13 +94,20 @@ class FlutterBluePlusWindows {
         }
       },
     );
+    if(isDebug){
+      WinBle.characteristicValueStream.listen((event) {
+        log("$tag  characteristicValueStream : address=${event['address']}");
+      });
+    }
     _initialized = true;
   }
 
-  static Future<bool> get isSupported async {
-    return true;
+  static Future<bool> isSupported() async {
+    await _initialize();
+    final blue = await WinBle.getBluetoothState();
+    log('$tag  isSupported');
+    return BleState.Unsupported != blue;
   }
-
   static Future<String> get adapterName async {
     return 'Windows';
   }
@@ -107,7 +126,8 @@ class FlutterBluePlusWindows {
 
   static Stream<BluetoothAdapterState> get adapterState async* {
     await _initialize();
-    yield _state;
+    final blue = await WinBle.getBluetoothState();
+    yield blue.toAdapterState();
     yield* WinBle.bleState.asBroadcastStream().map(
       (s) {
         _state = s.toAdapterState();
@@ -158,6 +178,7 @@ class FlutterBluePlusWindows {
     AndroidScanMode androidScanMode = AndroidScanMode.lowLatency,
     bool androidUsesFineLocation = false,
   }) async {
+    log('$tag startScan 0');
     await _initialize();
 
     // stop existing scan
@@ -192,11 +213,11 @@ class FlutterBluePlusWindows {
     }
 
     final output = <ScanResult>[];
-
+    log('$tag startScan 1');
     // listen & push to `scanResults` stream
     _scanSubscription = outputStream.listen(
       (BleDevice? winBleDevice) {
-        // print(winBleDevice?.serviceUuids);
+        // log(winBleDevice?.serviceUuids);
         if (winBleDevice == null) {
           // if null, this is just a periodic update for removing old results
           output.removeWhere((elm) => DateTime.now().difference(elm.timeStamp) > removeIfGone!);
@@ -273,6 +294,7 @@ class FlutterBluePlusWindows {
         }
       },
     );
+    log('$tag startScan 2 end');
   }
 
   static List<BluetoothDevice> get connectedDevices {
@@ -285,17 +307,19 @@ class FlutterBluePlusWindows {
 
   /// Stops a scan for Bluetooth Low Energy devices
   static Future<void> stopScan() async {
+    log('$tag stopScan 0');
     await _initialize();
     WinBle.stopScanning();
+    _isScanning.add(false);
     _scanSubscription?.cancel();
     _scanTimeout?.cancel();
-    _isScanning.add(false);
 
     for (var subscription in _scanSubscriptions) {
       subscription.cancel();
     }
 
     _scanResultsList.latestValue = [];
+    log('$tag stopScan 1');
   }
 
   /// Register a subscription to be canceled when scanning is complete.
@@ -313,6 +337,7 @@ class FlutterBluePlusWindows {
   }
 
   static Future<void> turnOff({int timeout = 10}) async {
+    log('$tag turnOff');
     await _initialize();
     await WinBle.updateBluetoothState(false);
   }

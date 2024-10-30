@@ -28,14 +28,14 @@ class _ScanScreenState extends State<ScanScreen> {
     super.initState();
 
     _scanResultsSubscription = FlutterBluePlus.scanResults.listen((results) {
-      _scanResults = results;
+      _scanResults = results.where((e)=>e.device.platformName.isNotEmpty).toList();
       if (mounted) {
         setState(() {});
       }
     }, onError: (e) {
       Snackbar.show(ABC.b, prettyException("Scan Error:", e), success: false);
     });
-
+    // FlutterBluePlus.cancelWhenScanComplete(_scanResultsSubscription);
     _isScanningSubscription = FlutterBluePlus.isScanning.listen((state) {
       _isScanning = state;
       if (mounted) {

@@ -1,6 +1,7 @@
 part of 'windows.dart';
 
 class BluetoothCharacteristicWindows extends BluetoothCharacteristic {
+  final tag='BluetoothCharacteristicWindows';
   final DeviceIdentifier remoteId;
   final Guid serviceUuid;
   final Guid? secondaryServiceUuid;
@@ -48,7 +49,30 @@ class BluetoothCharacteristicWindows extends BluetoothCharacteristic {
             ),
           ),
         );
-
+  CharacteristicProperties get properties {
+    // broadcast = p.broadcast,
+    // read = p.read,
+    // writeWithoutResponse = p.writeWithoutResponse,
+    // write = p.write,
+    // notify = p.notify,
+    // indicate = p.indicate,
+    // authenticatedSignedWrites = p.authenticatedSignedWrites,
+    // extendedProperties = p.extendedProperties,
+    // notifyEncryptionRequired = p.notifyEncryptionRequired,
+    // indicateEncryptionRequired = p.indicateEncryptionRequired;
+    return CharacteristicProperties(
+        broadcast: propertiesWinBle.broadcast ?? false,
+        read: propertiesWinBle.read ?? false,
+        writeWithoutResponse: propertiesWinBle.writeWithoutResponse ?? false,
+        write: propertiesWinBle.write ?? false,
+        notify: propertiesWinBle.notify ?? false,
+        indicate: propertiesWinBle.indicate ?? false,
+        authenticatedSignedWrites:
+        propertiesWinBle.authenticatedSignedWrites ?? false,
+        extendedProperties: false,
+        notifyEncryptionRequired: false,
+        indicateEncryptionRequired: false);
+  }
   String get _address => remoteId.str.toLowerCase();
 
   String get _key => "$serviceUuid:$characteristicUuid";
@@ -88,7 +112,7 @@ class BluetoothCharacteristicWindows extends BluetoothCharacteristic {
             serviceId: serviceUuid.str128,
             characteristicId: characteristicUuid.str128,
           ),
-          FlutterBluePlusWindows._charReadWriteStream.where((e) => e.$1 == _key).map((e) => e.$2)
+          // FlutterBluePlusWindows._charReadWriteStream.where((e) => e.$1 == _key).map((e) => e.$2)
         ],
       ).map((p) => <int>[...p]).asBroadcastStream();
 
@@ -128,20 +152,28 @@ class BluetoothCharacteristicWindows extends BluetoothCharacteristic {
     bool forceIndications = false, // TODO: missing implementation
   }) async {
     /// unSubscribeFromCharacteristic
-    try {
-      await WinBle.unSubscribeFromCharacteristic(
-        address: _address,
-        serviceId: serviceUuid.str128,
-        characteristicId: characteristicUuid.str128,
-      );
-    } catch (e) {
-      log('WinBle.unSubscribeFromCharacteristic was performed '
-          'before setNotifyValue()');
+    // try {
+    //   await WinBle.unSubscribeFromCharacteristic(
+    //     address: _address,
+    //     serviceId: serviceUuid.str128,
+    //     characteristicId: characteristicUuid.str128,
+    //   );
+    // } catch (e) {
+    //   log('WinBle.unSubscribeFromCharacteristic was performed '
+    //       'before setNotifyValue()');
+    // }
+    final state=await device.connectionState.first;
+    final enable=state==BluetoothConnectionState.connected;
+    if(enable){
+      await disconnectDevice();
+    }else{
+      log('$tag setNotifyValue 设备未连接');
     }
 
     /// set notify
     try {
-      if (notify) {
+      if (enable&&notify) {
+        log('$tag setNotifyValue 开始订阅 _address=$_address ');
         await WinBle.subscribeToCharacteristic(
           address: _address,
           serviceId: serviceUuid.str128,
@@ -149,10 +181,26 @@ class BluetoothCharacteristicWindows extends BluetoothCharacteristic {
         );
       }
       FlutterBluePlusWindows._isNotifying[remoteId] ??= {};
-      FlutterBluePlusWindows._isNotifying[remoteId]?[_key] = notify;
+      FlutterBluePlusWindows._isNotifying[remoteId]?[_key] = enable&&notify;
     } catch (e) {
-      log(e.toString());
+      log("$tag error:$e");
+      return false;
     }
     return true;
+  }
+  disconnectDevice()async{
+    try {
+      if (isNotifying) {
+        log('$tag  setNotifyValue 取消订阅 _address=$_address ');
+        await WinBle.unSubscribeFromCharacteristic(
+          address: _address,
+          serviceId: serviceUuid.str128,
+          characteristicId: characteristicUuid.str128,
+        );
+      }
+    } catch (e) {
+      log('$tag  WinBle.unSubscribeFromCharacteristic was performed '
+          'before setNotifyValue()');
+    }
   }
 }
